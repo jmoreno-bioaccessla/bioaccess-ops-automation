@@ -1,4 +1,3 @@
-# auth.py
 import os
 import sys
 import logging
@@ -66,9 +65,7 @@ def authenticate_and_get_service():
         http_obj = httplib2.Http(cache=None)
         authed_http = google_auth_httplib2.AuthorizedHttp(creds, http=http_obj)
         
-        # --- THIS IS THE KEY CHANGE ---
-        # By removing `cache_discovery=False`, we use the modern, static discovery
-        # method, which is faster and does not depend on the problematic `pkg_resources` library.
+        # Using static discovery by not specifying `cache_discovery=False`
         service = build('drive', 'v3', http=authed_http)
         
         about = service.about().get(fields='user').execute()

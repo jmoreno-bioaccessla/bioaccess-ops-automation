@@ -50,14 +50,14 @@ def list_files_recursively(drive_service, folder_id, current_path="", max_retrie
 def get_report_for_items(drive_service, item_ids, progress_callback=None):
     """
     Generates a permission report for a specific list of item IDs using efficient batching.
+    Returns the report data and a count of items that failed due to errors.
     """
     total_items = len(item_ids)
+    error_count = 0
     logging.info(f"Preparing to fetch data for {total_items} items using batch requests...")
     if progress_callback:
-        # Total steps is 2 batches (metadata + permissions)
         progress_callback(0, total_items * 2) 
 
-    # Step 1: Batch fetch file metadata
     metadata_requests = [
         drive_service.files().get(fileId=item_id, fields='id,name,mimeType,owners,webViewLink,parents,copyRequiresWriterPermission')
         for item_id in item_ids
@@ -66,7 +66,6 @@ def get_report_for_items(drive_service, item_ids, progress_callback=None):
     metadata_results = execute_requests_in_batches(drive_service, metadata_requests, 
         lambda current, total: progress_callback(current, total * 2) if progress_callback else None)
 
-    # Step 2: Batch fetch permissions
     permission_requests = [
         drive_service.permissions().list(fileId=item_id, fields='permissions(id,type,emailAddress,domain,role)')
         for item_id in item_ids
@@ -75,14 +74,14 @@ def get_report_for_items(drive_service, item_ids, progress_callback=None):
     permission_results = execute_requests_in_batches(drive_service, permission_requests,
         lambda current, total: progress_callback(total_items + current, total * 2) if progress_callback else None)
 
-    # Step 3: Process the results
     report_data = []
     for i, item_id in enumerate(item_ids):
         item = metadata_results[i]
         permissions_response = permission_results[i]
 
-        if not item:
-            logging.error(f"Failed to fetch data for item ID {item_id}, skipping.")
+        if not item or not permissions_response:
+            logging.error(f"Could not retrieve full data for item ID {item_id}, skipping.")
+            error_count += 1
             continue
 
         is_restricted = "N/A"
@@ -90,7 +89,7 @@ def get_report_for_items(drive_service, item_ids, progress_callback=None):
             is_restricted = item.get('copyRequiresWriterPermission', False)
 
         owner = item.get('owners', [{}])[0].get('emailAddress', 'N/A')
-        permissions = permissions_response.get('permissions', []) if permissions_response else []
+        permissions = permissions_response.get('permissions', [])
 
         if not permissions:
             report_data.append({
@@ -112,7 +111,7 @@ def get_report_for_items(drive_service, item_ids, progress_callback=None):
                 })
 
     logging.info(f"Finished processing data for {total_items} items.")
-    return report_data
+    return report_data, error_count
 
 def generate_permission_report(drive_service, folder_id, user_email=None, progress_callback=None):
     """
@@ -120,14 +119,46 @@ def generate_permission_report(drive_service, folder_id, user_email=None, progre
     """
     logging.info(f"Starting full report generation for folder ID: {folder_id}")
     all_items = list_files_recursively(drive_service, folder_id)
+    if not all_items:
+        return [], 0 # Return empty list and zero errors if no items found
+
     item_ids = [item['id'] for item in all_items]
     
-    # Delegate the detailed fetching to the batch-enabled on-demand function
-    report_data = get_report_for_items(drive_service, item_ids, progress_callback)
+    report_data, error_count = get_report_for_items(drive_service, item_ids, progress_callback)
     
-    # Add the full path back in for full reports
     path_map = {item['id']: item['path'] for item in all_items}
     for row in report_data:
         row['Full Path'] = path_map.get(row['Item ID'], 'N/A')
+
+    if user_email:
+        logging.info(f"Filtering full report for user: {user_email}")
+        report_data = [row for row in report_data if row.get('Email Address', '').lower() == user_email.lower()]
             
-    return report_data
+    return report_data, error_count
+
+def generate_domain_filtered_report(drive_service, folder_id, domain, progress_callback=None):
+    """
+    Generates a report containing only items accessible to at least one user from the specified domain.
+    """
+    logging.info(f"Starting domain-filtered report for folder ID: {folder_id}, domain: {domain}")
+    
+    full_report_data, initial_error_count = generate_permission_report(drive_service, folder_id, progress_callback=progress_callback)
+
+    if not full_report_data:
+        return [], initial_error_count
+
+    item_ids_with_domain_access = set()
+    for row in full_report_data:
+        email = row.get('Email Address', '')
+        if isinstance(email, str) and email.lower().endswith(f"@{domain.lower()}"):
+            item_ids_with_domain_access.add(row['Item ID'])
+    
+    logging.info(f"Found {len(item_ids_with_domain_access)} items with permissions for domain '{domain}'.")
+
+    if not item_ids_with_domain_access:
+        return [], initial_error_count
+
+    filtered_report = [row for row in full_report_data if row['Item ID'] in item_ids_with_domain_access]
+
+    return filtered_report, initial_error_count
+

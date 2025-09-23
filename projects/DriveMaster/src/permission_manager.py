@@ -1,10 +1,8 @@
-# permission_manager.py
 import logging
 import pandas as pd
 from googleapiclient.errors import HttpError
 from datetime import datetime
-from src.config import REVERSE_ROLE_MAP, ROLE_MAP
-from src.report_generator import generate_permission_report
+from src.config import REVERSE_ROLE_MAP
 
 def _find_permission_id(drive_service, file_id, p_type, p_address, p_role_api):
     try:
@@ -37,8 +35,8 @@ def generate_rollback_actions(audit_log_path, live_report_data, auth_user_email)
     for _, log_entry in successful_actions_df.iterrows():
         item_id, cmd = str(log_entry['Item ID']), str(log_entry['Action_Command'])
         
-        item_name = item_name_map.get(item_id, 'N/A')
-        full_path = log_entry.get('Full Path', 'N/A')
+        item_name = item_name_map.get(item_id, log_entry.get('Item Name', 'N/A'))
+        full_path = log_entry.get('Full Path', 'N/A (Path not in log)')
         action = {'Item ID': item_id, 'Full Path': full_path, 'Item Name': item_name, 'Root Folder ID': root_folder_id}
         
         original_email = str(log_entry.get('Original_Email_Address', '')).lower()
@@ -108,10 +106,13 @@ def process_changes(drive_service, plan, root_folder_id, dry_run=True, progress_
         logging.info("--- Starting Dry Run: No changes will be made. ---")
 
     audit_trail = []
+    success_count = 0
+    error_count = 0
     total_actions = len(plan)
+
     if not plan:
         logging.info("Execution plan is empty. No changes to process.")
-        return audit_trail, root_folder_id
+        return audit_trail, success_count, error_count
 
     for i, action in enumerate(plan):
         if progress_callback:
@@ -124,6 +125,7 @@ def process_changes(drive_service, plan, root_folder_id, dry_run=True, progress_
 
         if dry_run:
             logging.info(f"[DRY RUN] Would perform '{cmd}' on Item ID: {item_id}")
+            success_count += 1
             audit_trail.append(entry)
             continue
         
@@ -140,6 +142,7 @@ def process_changes(drive_service, plan, root_folder_id, dry_run=True, progress_
                     drive_service.files().update(fileId=item_id, body={'copyRequiresWriterPermission': (desired_str == 'TRUE')}).execute()
                     entry.update({'Details': details, 'Original_Role': original_str, 'New_Role': desired_str, 'Status': 'SUCCESS'})
                     logging.info(f"[SUCCESS] {details} for Item ID: {item_id}")
+                    success_count += 1
 
             elif cmd == 'ADD':
                 p_type, p_address, p_role_ui = str(action.get('Type of account (for ADD)')).lower(), str(action.get('Email/Domain (for ADD)')), str(action.get('New_Role'))
@@ -149,6 +152,7 @@ def process_changes(drive_service, plan, root_folder_id, dry_run=True, progress_
                 entry['Details'] = f"Added {p_address} as {p_role_ui}."
                 entry['Status'] = 'SUCCESS'
                 logging.info(f"[SUCCESS] Performed {cmd} for '{p_address}' on Item ID: {item_id}")
+                success_count += 1
 
             elif cmd == 'REMOVE':
                 p_type, p_address, p_role_ui = str(action.get('Principal Type')).lower(), str(action.get('Email Address')), str(action.get('Role'))
@@ -160,6 +164,7 @@ def process_changes(drive_service, plan, root_folder_id, dry_run=True, progress_
                     entry['Details'] = f"Removed {p_address} as {p_role_ui}."
                     entry['Status'] = 'SUCCESS'
                     logging.info(f"[SUCCESS] Performed {cmd} for '{p_address}' on Item ID: {item_id}")
+                    success_count += 1
                 else: raise ValueError(f"Permission not found for {p_address} with role {p_role_ui} to remove.")
 
             elif cmd == 'MODIFY':
@@ -172,13 +177,16 @@ def process_changes(drive_service, plan, root_folder_id, dry_run=True, progress_
                     entry['Details'] = f"Modified {p_address} from {old_ui} to {new_ui}."
                     entry['Status'] = 'SUCCESS'
                     logging.info(f"[SUCCESS] Performed {cmd} for '{p_address}' on Item ID: {item_id}")
+                    success_count += 1
                 else: raise ValueError(f"Permission not found for {p_address} with role {old_ui} to modify.")
         
         except (ValueError, HttpError) as e:
             entry['Status'] = 'ERROR' if isinstance(e, HttpError) else 'SKIPPED'
             entry['Details'] = str(e)
             logging.error(f"[{entry['Status']}] {cmd} on Item ID: {item_id}. Reason: {e}")
+            error_count += 1
         
         audit_trail.append(entry)
 
-    return audit_trail, root_folder_id
+    return audit_trail, success_count, error_count
+

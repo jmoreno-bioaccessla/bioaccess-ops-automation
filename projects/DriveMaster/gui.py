@@ -74,14 +74,22 @@ class App(tk.Tk):
     def create_fetch_widgets(self):
         frame = ttk.LabelFrame(self.scrollable_frame, text="1. Fetch Permissions", padding="10")
         frame.pack(fill="x", pady=5)
+        
         ttk.Label(frame, text="Google Drive Folder ID:").grid(row=0, column=0, sticky="w", padx=5, pady=2)
         self.fetch_id_var = tk.StringVar()
         ttk.Entry(frame, textvariable=self.fetch_id_var).grid(row=0, column=1, sticky="ew", padx=5)
-        ttk.Label(frame, text="Optional User Email:").grid(row=1, column=0, sticky="w", padx=5, pady=2)
+
+        ttk.Label(frame, text="Optional User Email Filter:").grid(row=1, column=0, sticky="w", padx=5, pady=2)
         self.fetch_email_var = tk.StringVar()
         ttk.Entry(frame, textvariable=self.fetch_email_var).grid(row=1, column=1, sticky="ew", padx=5)
+
+        ttk.Label(frame, text="Optional Sponsor Domain Filter:").grid(row=2, column=0, sticky="w", padx=5, pady=2)
+        self.fetch_domain_var = tk.StringVar()
+        ttk.Entry(frame, textvariable=self.fetch_domain_var).grid(row=2, column=1, sticky="ew", padx=5)
+
         self.fetch_button = ttk.Button(frame, text="Run Fetch", command=self.on_fetch)
-        self.fetch_button.grid(row=2, column=0, columnspan=2, sticky="ew", padx=5, pady=5)
+        self.fetch_button.grid(row=3, column=0, columnspan=2, sticky="ew", padx=5, pady=5)
+        
         frame.columnconfigure(1, weight=1)
 
     def create_apply_widgets(self):
@@ -180,23 +188,32 @@ class App(tk.Tk):
         folder_id = self.fetch_id_var.get()
         if not folder_id: return messagebox.showerror("Error", "Please enter a Folder ID.")
         
+        user_email = self.fetch_email_var.get() or None
+        sponsor_domain = self.fetch_domain_var.get() or None
+        
         self.show_progress()
-        self.run_in_thread(self._fetch_worker, folder_id, self.fetch_email_var.get() or None)
+        self.run_in_thread(self._fetch_worker, folder_id, user_email, sponsor_domain)
 
-    def _fetch_worker(self, folder_id, user_email):
-        result = run_fetch(folder_id, user_email, progress_callback=self.update_progress)
+    def _fetch_worker(self, folder_id, user_email, sponsor_domain):
+        result = run_fetch(folder_id, user_email, sponsor_domain, progress_callback=self.update_progress)
         self.after(0, self._on_fetch_complete, result)
 
     def _on_fetch_complete(self, result):
         self.hide_progress()
         if result is None: return 
         
-        report_data, output_path = result
+        report_data, output_path, domain_filter, error_count = result
+        
+        if error_count > 0:
+            messagebox.showwarning("Incomplete Report", 
+                f"Fetch complete, but data for {error_count} item(s) could not be retrieved due to insufficient permissions. "
+                "The generated report is incomplete.")
+
         if not report_data: return logging.info("--- Fetch complete (no data to write) ---")
 
         while True:
             try:
-                if write_report_to_excel(report_data, output_path):
+                if write_report_to_excel(report_data, output_path, domain_filter):
                     logging.info(f"User-facing Excel report saved to {output_path}")
                 logging.info("--- Fetch complete ---")
                 break 
