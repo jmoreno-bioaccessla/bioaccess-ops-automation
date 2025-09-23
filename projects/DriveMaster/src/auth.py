@@ -1,24 +1,38 @@
-# src/auth.py
-
 import os
+import sys
 import logging
+import httplib2 
+
 from google.auth.transport.requests import Request
 from google.oauth2.credentials import Credentials
 from google_auth_oauthlib.flow import InstalledAppFlow
 from googleapiclient.discovery import build
 from google.auth.exceptions import RefreshError
-# NOTE: We are intentionally NOT importing FlowTimeoutError to work around the environment issue.
+import google_auth_httplib2 # Import the authorization bridge
+
+def _get_resource_path(relative_path):
+    """ Get absolute path to resource, works for dev and for PyInstaller """
+    try:
+        # PyInstaller creates a temp folder and stores path in _MEIPASS
+        base_path = sys._MEIPASS
+    except Exception:
+        base_path = os.path.abspath(".")
+    return os.path.join(base_path, relative_path)
 
 SCOPES = ['https://www.googleapis.com/auth/drive']
-SCRIPT_DIR = os.path.dirname(__file__)
-PROJECT_ROOT = os.path.dirname(SCRIPT_DIR)
-TOKEN_FILE = os.path.join(PROJECT_ROOT, 'credentials', 'token.json')
-CREDENTIALS_FILE = os.path.join(PROJECT_ROOT, 'credentials', 'credentials_DeskApp.json')
+CREDENTIALS_DIR_PATH = _get_resource_path('credentials')
+TOKEN_FILE = os.path.join(CREDENTIALS_DIR_PATH, 'token.json')
+CREDENTIALS_FILE = os.path.join(CREDENTIALS_DIR_PATH, 'credentials_DeskApp.json')
 
 def authenticate_and_get_service():
-    """ Handles the OAuth 2.0 Installed Application flow. """
+    """ 
+    Handles the OAuth 2.0 flow.
+    Returns a tuple: (drive_service, authenticated_user_email) or (None, None) on failure.
+    """
+    os.makedirs(CREDENTIALS_DIR_PATH, exist_ok=True)
+    
     if not os.path.exists(CREDENTIALS_FILE):
-        logging.critical(f"FATAL: Client secrets file not found at '{CREDENTIALS_FILE}'. Please set it up."); return None
+        logging.critical(f"FATAL: Client secrets file not found at '{CREDENTIALS_FILE}'. Please set it up."); return None, None
 
     creds = None
     if os.path.exists(TOKEN_FILE):
@@ -33,7 +47,7 @@ def authenticate_and_get_service():
             try:
                 creds.refresh(Request())
             except RefreshError:
-                logging.warning(f"Failed to refresh token. Deleting invalid token and re-authenticating."); os.remove(TOKEN_FILE); creds = None
+                logging.warning(f"Failed to refresh token. Deleting invalid token."); os.remove(TOKEN_FILE); creds = None
             except Exception as e:
                 logging.error(f"Unexpected error during token refresh: {e}"); creds = None
         
@@ -45,11 +59,39 @@ def authenticate_and_get_service():
                 with open(TOKEN_FILE, 'w') as token: token.write(creds.to_json())
                 logging.info(f"Token saved to {TOKEN_FILE}")
             except Exception as e:
-                logging.error("\n---"); logging.error(f"Authentication flow failed or timed out. (Error: {e})"); logging.error("Please re-run and authenticate with an authorized account."); logging.error("---\n"); return None
+                logging.error(f"\n---Authentication flow failed or timed out. (Error: {e})---\n"); return None, None
 
     try:
-        service = build('drive', 'v3', credentials=creds, cache_discovery=False)
-        logging.info("Google Drive service created successfully (caching disabled).")
-        return service
+        http_obj = httplib2.Http(cache=None)
+        authed_http = google_auth_httplib2.AuthorizedHttp(creds, http=http_obj)
+        
+        # Using static discovery by not specifying `cache_discovery=False`
+        service = build('drive', 'v3', http=authed_http)
+        
+        about = service.about().get(fields='user').execute()
+        user_email = about.get('user', {}).get('emailAddress')
+        if not user_email:
+            logging.error("Could not determine the authenticated user's email address.")
+            return None, None
+        logging.info(f"Authenticated successfully as: {user_email}")
+        
+        return service, user_email
     except Exception as e:
-        logging.error(f"Failed to build Drive service: {e}"); return None
+        logging.error(f"Failed to build Drive service or get user info: {e}"); return None, None
+
+def reset_authentication():
+    """
+    Deletes the token.json file to force re-authentication on the next run.
+    Returns True on success (or if file did not exist), False on failure.
+    """
+    try:
+        if os.path.exists(TOKEN_FILE):
+            os.remove(TOKEN_FILE)
+            logging.info(f"Authentication token deleted: {TOKEN_FILE}")
+        else:
+            logging.info("No authentication token to delete.")
+        return True
+    except Exception as e:
+        logging.error(f"Failed to delete token file at {TOKEN_FILE}: {e}")
+        return False
+

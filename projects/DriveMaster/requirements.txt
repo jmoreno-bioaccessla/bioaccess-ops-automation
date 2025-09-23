@@ -1,8 +1,16 @@
-# requirements.txt
+google-api-python-client==2.92.0
+google-auth-oauthlib==1.0.0
+google-auth-httplib2==0.1.0
 
-google-api-python-client
-google-auth-httplib2
-google-auth-oauthlib>=0.5.0
-pandas
-openpyxl
+#--- Data & Excel ---
+pandas==1.5.3
+numpy==1.24.4
+openpyxl==3.1.2
+
+#--- GUI & Imaging ---
+Pillow==9.5.0
+
+#--- Build Tools (Pinned to stable versions) ---
+setuptools==65.5.0
+pyinstaller==5.7.0
 dotenv

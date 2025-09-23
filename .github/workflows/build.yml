@@ -1,0 +1,43 @@
+name: Build DriveMaster Executable
+
+on:
+  push:
+    branches: [ main ]
+  workflow_dispatch:
+
+jobs:
+  build:
+    runs-on: windows-latest
+
+    steps:
+    - uses: actions/checkout@v3
+
+    - name: Set up Python 3.10
+      uses: actions/setup-python@v3
+      with:
+        python-version: '3.10'
+
+    # --- NEW STEP TO CREATE CREDENTIALS FILE ---
+    - name: Create credentials.json from secret
+      # This step runs from the root of the repository
+      run: |
+        New-Item -Path projects/DriveMaster/credentials -ItemType Directory
+        Add-Content -Path projects/DriveMaster/credentials/credentials_DeskApp.json -Value '${{ secrets.DRIVEMASTER_CREDENTIALS }}'
+      shell: pwsh
+
+    - name: Install dependencies
+      run: |
+        python -m pip install --upgrade pip
+        pip install -r projects/DriveMaster/requirements.txt
+
+    - name: Build executable with PyInstaller
+      working-directory: ./projects/DriveMaster
+      run: |
+        python -m PyInstaller main.spec
+
+    - name: Upload artifact
+      uses: actions/upload-artifact@v4
+      with:
+        name: DriveMaster-Executable
+        path: projects/DriveMaster/dist/main.exe
+
